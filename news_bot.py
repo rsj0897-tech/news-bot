@@ -7,17 +7,26 @@ from typing import Dict, List, Any
 
 import requests
 
-from config import (
-    NAVER_CLIENT_ID,
-    NAVER_CLIENT_SECRET,
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_CHAT_ID,
-    SEARCH_DISPLAY,
-    FINAL_SEND_COUNT,
-    TEAM_KEYWORDS,
-)
-
 NAVER_NEWS_API_URL = "https://openapi.naver.com/v1/search/news.json"
+
+# -----------------------------
+# 환경변수 로드
+# -----------------------------
+NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+SEARCH_DISPLAY = int(os.getenv("SEARCH_DISPLAY", "20"))
+FINAL_SEND_COUNT = int(os.getenv("FINAL_SEND_COUNT", "5"))
+
+# TEAM_KEYWORDS 예시 형식:
+# {
+#   "은행팀": ["KB금융", "신한금융", "하나금융"],
+#   "보험팀": ["삼성생명", "한화생명"],
+#   "제2금융팀": ["저축은행", "카드사"]
+# }
+TEAM_KEYWORDS_RAW = os.getenv("TEAM_KEYWORDS", "")
+
 TELEGRAM_SEND_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
 DEBUG = True
@@ -124,6 +133,50 @@ TEAM_PRIORITY_KEYWORDS = {
 }
 
 
+def load_team_keywords(raw: str) -> Dict[str, List[str]]:
+    """
+    TEAM_KEYWORDS 환경변수 형식 예시:
+    은행팀:KB금융,신한금융,하나금융;보험팀:삼성생명,한화생명;제2금융팀:저축은행,카드사
+    """
+    result: Dict[str, List[str]] = {}
+
+    if not raw.strip():
+        return result
+
+    groups = raw.split(";")
+    for group in groups:
+        if ":" not in group:
+            continue
+        team_name, keywords_str = group.split(":", 1)
+        team_name = team_name.strip()
+        keywords = [kw.strip() for kw in keywords_str.split(",") if kw.strip()]
+        if team_name and keywords:
+            result[team_name] = keywords
+
+    return result
+
+
+TEAM_KEYWORDS = load_team_keywords(TEAM_KEYWORDS_RAW)
+
+
+def validate_env() -> None:
+    missing = []
+
+    if not NAVER_CLIENT_ID:
+        missing.append("NAVER_CLIENT_ID")
+    if not NAVER_CLIENT_SECRET:
+        missing.append("NAVER_CLIENT_SECRET")
+    if not TELEGRAM_BOT_TOKEN:
+        missing.append("BOT_TOKEN")
+    if not TELEGRAM_CHAT_ID:
+        missing.append("TELEGRAM_CHAT_ID")
+    if not TEAM_KEYWORDS:
+        missing.append("TEAM_KEYWORDS")
+
+    if missing:
+        raise ValueError(f"필수 환경변수가 없습니다: {', '.join(missing)}")
+
+
 def debug_log(message: str) -> None:
     if DEBUG:
         print(f"[DEBUG] {message}")
@@ -169,7 +222,6 @@ def score_article(team_name: str, title: str, desc: str) -> int:
         if keyword.lower() in text:
             score += weight
 
-    # 제목에 키워드가 있으면 가중치 조금 더
     title_lower = title.lower()
     for keyword, weight in weights.items():
         if keyword.lower() in title_lower:
@@ -219,10 +271,7 @@ def filter_articles(team_name: str, articles: List[Dict[str, Any]]) -> List[Dict
         pub_date = item.get("pubDate", "")
 
         source = ""
-        # 네이버 뉴스 API 응답엔 언론사명이 직접 없을 수 있어 제목/설명/링크로만 판단
-        # 필요하면 별도 파싱 추가
         source_guess = f"{title} {desc} {link}"
-
         combined_text = f"{title} {desc}"
 
         if contains_exclude_keyword(combined_text):
@@ -245,7 +294,6 @@ def filter_articles(team_name: str, articles: List[Dict[str, Any]]) -> List[Dict
 
 
 def dedupe_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # 1) 완전 중복 제거
     unique = []
     seen_titles = set()
 
@@ -258,7 +306,6 @@ def dedupe_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     debug_log(f"완전중복 제거 후={len(unique)}")
 
-    # 2) 유사 중복 제거
     deduped = []
     saved_titles = []
 
@@ -299,7 +346,6 @@ def collect_team_articles(team_name: str, keywords: List[str]) -> List[Dict[str,
     for item in deduped:
         item["score"] = score_article(team_name, item["title"], item["description"])
 
-    # 점수 우선, 동점이면 최신이 앞
     ranked = sorted(
         deduped,
         key=lambda x: (x.get("score", 0), x.get("pubDate", "")),
@@ -364,6 +410,8 @@ def send_telegram_message(text: str) -> bool:
 
 
 def main():
+    validate_env()
+
     debug_log(f"SEARCH_DISPLAY={SEARCH_DISPLAY}")
     debug_log(f"FINAL_SEND_COUNT={FINAL_SEND_COUNT}")
 
