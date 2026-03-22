@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+config.py
+config(server).py
+keywords.json
+sent_articles.json
+sent_links
+run_news_bot.bat
+.env
